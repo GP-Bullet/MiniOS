@@ -98,3 +98,4 @@ protect_start:
 
    mov byte [gs:160],'P'
    jmp $
+   
