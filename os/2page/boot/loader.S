@@ -97,6 +97,13 @@ protect_start:
    mov gs,ax
 
 ;创建页目录表和页表
+
+    mov eax,KERNEL_START_SECTOR      ;9号扇区
+    mov ebx,KERNEL_BIN_BASE_ADDR       ;0x70000
+    mov ebx,200                         ;读两百个
+    call rd_disk_m_32
+
+;启用分页分三步走
     call set_pagedirtable_pagetable
 
     mov ebx,[gdt_ptr+2]
@@ -115,9 +122,55 @@ protect_start:
 ;打开分页后，用gdt的新地址重新加载
     lgdt[gdt_ptr]
 
-mov byte [gs:160],'V'
+enter_kernel:
+    call kernel_init
+    mov esp,0xc009f000
+    jmp KERNEL_ENTRY_POINT
 
-    jmp $
+kernel_init:
+    xor eax,eax                 ;清空eax
+    xor ebx,ebx                 ;清空ebx, ebx记录程序头表地址
+    xor ecx,ecx                 ;清空ecx, cx记录程序头表中的program header数量
+    xor edx,edx                 ;清空edx, dx 记录program header尺寸
+
+    mov dx,[KERNEL_BIN_BASE_ADDR + 42]          ; 偏移文件42字节处的属性是e_phentsize,表示program header table中每个program header大小
+    mov ebx,[KERNEL_BIN_BASE_ADDR +28]          ; 偏移文件开始部分28字节的地方是e_phoff,表示program header table的偏移，ebx中是第1 个program header在文件中的偏移量
+                                                ; 其实该值是0x34,不过还是谨慎一点，这里来读取实际值
+    add ebx, KERNEL_BIN_BASE_ADDR                       ; 现在ebx中存着第一个program header的内存地址
+    mov cx, [KERNEL_BIN_BASE_ADDR + 44]                 ; 偏移文件开始部分44字节的地方是e_phnum,表示有几个program header
+.each_segment:
+    cmp byte [ebx + 0], PT_NULL		                    ; 若p_type等于 PT_NULL,说明此program header未使用。
+    je .PTNULL
+
+                                                        ;为函数memcpy压入参数,参数是从右往左依然压入.函数原型类似于 memcpy(dst,src,size)
+    push dword [ebx + 16]		                        ; program header中偏移16字节的地方是p_filesz,压入函数memcpy的第三个参数:size
+    mov eax, [ebx + 4]			                        ; 距程序头偏移量为4字节的位置是p_offset，该值是本program header 所表示的段相对于文件的偏移
+    add eax, KERNEL_BIN_BASE_ADDR	                    ; 加上kernel.bin被加载到的物理地址,eax为该段的物理地址
+    push eax				                            ; 压入函数memcpy的第二个参数:源地址
+    push dword [ebx + 8]			                    ; 压入函数memcpy的第一个参数:目的地址,偏移程序头8字节的位置是p_vaddr，这就是目的地址
+    call mem_cpy				                        ; 调用mem_cpy完成段复制
+    add esp,12				                            ; 清理栈中压入的三个参数
+.PTNULL:
+   add ebx, edx				                            ; edx为program header大小,即e_phentsize,在此ebx指向下一个program header 
+   loop .each_segment
+   ret
+
+
+     ;----------  逐字节拷贝 mem_cpy(dst,src,size) 输入:栈中三个参数(dst,src,size)
+mem_cpy:
+    cld 
+    push ebp
+    mov ebp,esp
+    push ecx
+    mov edi,[ebp + 8]                   ;dst    +8是因为零一个mem_cpy的返回地址和一个push ebp
+    mov esi, [ebp +12]                  ;src 
+    mov ecx, [ebp + 16]                 ;size
+    rep movsb                           ;DS：[E]SI指向的地址处的 1、2 或 4 个字节搬到 ES：[E]DI 指向的地址处，16 位环境下源地址指针用 SI 寄存器，目的地址指针用 DI 寄存器，32 位环境下源地址则用 ESI，目的地址则用 EDI。
+
+    pop ecx
+    pop ebp
+    ret
+
 
 
 set_pagedirtable_pagetable:
@@ -170,3 +223,69 @@ set_pagedirtable_pagetable:
     add eax,0x1000
     loop .create_kernel_pde  ; 循环设定254个页目录表项
     ret
+
+
+
+;读磁盘的n个扇区函数    
+rd_disk_m_32:
+   				    ; eax=LBA扇区号，逻辑块地址（Logical Block Address），LBA28格式
+				       ; ebx=将数据写入的内存地址
+				       ; ecx=读入的扇区数
+   mov esi,eax  ;可以使用32位
+   mov di,cx
+
+;1,要读取的扇区数
+   mov dx,0x1f2
+   mov al,cl
+   out dx,al  ;输出
+
+;恢复eax
+   mov eax,esi
+   
+;2,将LBA地址存放0x1f3~0x1f6  0x1f6为device
+
+
+;0~7
+   mov dx,0x1f3
+   out dx,al
+;8~15
+   shr eax,8
+   mov dx,0x1f4
+   out dx,al
+;16~23
+   shr eax,8
+   mov dx,0x1f5   
+;LBA28即0～27，  
+   shr eax,8
+   and al,0x0f  ;保留24～27位
+   or  al,0xe0   ;高4位为1110,lba模式
+   mov dx,0x1f6 
+   out dx,al
+;3.向0x1f7写入读状态命令，0x20
+   mov dx,0x1f7
+   mov al,0x20
+   out dx,al
+;4,检测硬盘状态
+not_ready:
+   ;nop 表示空操作，即什么也不做，只是为了增加延迟，相当于 sleep 了一小下，目的是减少打扰硬盘的工作。
+   ;0x1f7端口，对同一端口在读写两种操作时有不同的用途，在读硬盘时，此端口中的值是硬盘的工作状态。
+   nop
+   in al,dx
+   and al,0x88
+   cmp al,0x08 ;修改标志位  
+   jnz not_ready  ;不为零则说明忙，执行跳转
+
+;5,准备好，则从0x1f0读扇区数据
+   mov ax,di
+   mov dx,256  ;di为要读取的扇区数，一个扇区有512字节，每次读入一个字，共需di*512/2次，所以di*256
+   mul dx
+   mov cx,ax
+
+   mov dx,0x1f0
+continue_read:
+   in ax,dx             
+   mov [ebx],ax         ;与rd_disk_m_16相比，就是把bx改成了ebx
+   add ebx,2
+   loop continue_read
+
+   ret
