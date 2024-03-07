@@ -1,0 +1,2 @@
+void timer_init();
+

@@ -1,0 +1,108 @@
+#ifndef KERNEL_GLOBAL
+#define KERNEL_GLOBAL
+#include "stdint.h"
+
+//-------------GDT 描述符属性------------------
+#define DESC_G_4K 1
+#define DESC_D_32 1
+#define DESC_L 0    // 64 位代码标记,此处标记为 0 便可
+#define DESC_AVL 0  // cpu 不用此位,暂置为 0
+#define DESC_P 1    // 表示是否已经在内存
+// DPL 2位的特权级 0,1,2,3
+#define DESC_DPL_0 0
+#define DESC_DPL_1 1
+#define DESC_DPL_2 2
+#define DESC_DPL_3 3
+
+// S S为 0 表示系统段,S 为 1 表示存储段(下面前两个为非系统段第三个为系统段)
+// 代码段和数据段属于存储段,tss 和各种门描述符属于系统段
+#define DESC_S_CODE 1
+#define DESC_S_DATA DESC_S_CODE
+#define DESC_S_SYS 0
+// TYPE字段
+// x=1,c=0,r=0,a=0 代码段是可执行的,非一致性,不可读,已访问位 a 清 0
+#define DESC_TYPE_CODE 8
+// x=0,e=0,w=1,a=0 数据段是不可执行的,向上扩展的,可写,已访问位 a 清 0
+#define DESC_TYPE_DATA 2
+// B 位为 0,不忙
+#define DESC_TYPE_TSS 9
+
+// RPL（四个权级）
+#define RPL0 0
+#define RPL1 1
+#define RPL2 2
+#define RPL3 3
+
+// TI(全局描述符表/局部描述符表)
+#define TI_GDT 0
+#define TI_LDT 1
+
+// 选择子定义(内核)
+#define SELECTOR_K_CODE ((1 << 3) + (TI_GDT << 2) + RPL0)  // 代码段选择子
+#define SELECTOR_K_DATA ((2 << 3) + (TI_GDT << 2) + RPL0)  // 数据段选择子
+#define SELECTOR_K_STACK SELECTOR_K_DATA  // 栈段选择子(和数据段共用一个段)
+#define SELECTOR_K_GS ((3 << 3) + (TI_GDT << 2) + RPL0)  // 显卡段选择自
+/* 第 3 个段描述符是显存,第 4 个是 tss (后面定义tss) */
+#define SELECTOR_U_CODE ((5 << 3) + (TI_GDT << 2) + RPL3)
+#define SELECTOR_U_DATA ((6 << 3) + (TI_GDT << 2) + RPL3)
+#define SELECTOR_U_STACK SELECTOR_U_DATA
+
+//--------------   GDT描述高 23～20 位整合  ------------
+#define GDT_ATTR_HIGH \
+  ((DESC_G_4K << 7) + (DESC_D_32 << 6) + (DESC_L << 5) + (DESC_AVL << 4))
+
+//--------------   GDT描述高 15～8 位整合  ------------
+#define GDT_CODE_ATTR_LOW_DPL3 \
+  ((DESC_P << 7) + (DESC_DPL_3 << 5) + (DESC_S_CODE << 4) + DESC_TYPE_CODE)
+
+#define GDT_DATA_ATTR_LOW_DPL3 \
+  ((DESC_P << 7) + (DESC_DPL_3 << 5) + (DESC_S_DATA << 4) + DESC_TYPE_DATA)
+
+//--------------- TSS 描述符属性 -------------
+#define TSS_DESC_D 0
+// 高 23～20 位整合
+#define TSS_ATTR_HIGH \
+  ((DESC_G_4K << 7) + (TSS_DESC_D << 6) + (DESC_L << 5) + (DESC_AVL << 4) + 0x0)
+
+#define TSS_ATTR_LOW \
+  ((DESC_P << 7) + (DESC_DPL_0 << 5) + (DESC_S_SYS << 4) + DESC_TYPE_TSS)
+
+// tss段选择子
+#define SELECTOR_TSS ((4 << 3) + (TI_GDT << 2) + RPL0)
+
+//--------------   IDT描述符属性  ------------
+#define IDT_DESC_P 1  // P标识位(和GDT描述符一样，段存在在内存中为1)
+#define IDT_DESC_DPL0 0  // 权级，因为中断是从用户到内核，所以只设计两个特权级
+#define IDT_DESC_DPL3 3
+#define IDT_DESC_32_TYPE 0xE  // 32位的门(1110)
+#define IDT_DESC_16_TYPE 0x6  // 16位的门(0110)，不用，定义它只为和32位门区分
+#define IDT_DESC_ATTR_DPL0 \
+  ((IDT_DESC_P << 7) + (IDT_DESC_DPL0 << 5) + IDT_DESC_32_TYPE)
+#define IDT_DESC_ATTR_DPL3 \
+  ((IDT_DESC_P << 7) + (IDT_DESC_DPL3 << 5) + IDT_DESC_32_TYPE)
+
+/* 定义 GDT 中描述符的结构 */
+struct gdt_desc {
+  uint16_t limit_low_word;
+  uint16_t base_low_word;
+  uint8_t base_mid_byte;
+  uint8_t attr_low_byte;
+  uint8_t limit_high_attr_high;
+  uint8_t base_high_byte;
+};
+
+#define EFLAGS_MBS (1 << 1)      // 此项必须要设置
+#define EFLAGS_IF_1 (1 << 9)     // 开中断
+#define EFLAGS_IF_0 0            // 关中断
+#define EFLAGS_IOPL_3 (3 << 12)  // IO端口权级别（最低）
+#define EFLAGS_IOPL_0 (0 << 12)  // IOPL0
+
+// 向上取整 (13/4=4)
+#define DIV_ROUND_UP(X, STEP) ((X + STEP - 1) / (STEP))
+
+#define NULL ((void*)0)
+typedef enum { false, true } bool;
+
+#define UNUSED __attribute__((unused))  // 告诉编译器忽略未使用的警告
+
+#endif /* KERNEL_GLOBAL */
